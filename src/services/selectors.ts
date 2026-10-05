@@ -1,5 +1,6 @@
 import type {
   ContractDifference,
+  EventContractSnapshot,
   EventDefinition,
   EventProperty,
   EventVersionSnapshot,
@@ -36,12 +37,22 @@ export const latestBaseline = (
     .filter((baseline) => baseline.eventId === eventId)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
 
-export const compareEventContract = (
-  event: EventDefinition,
-  baseline?: EventVersionSnapshot,
+const activeProperty = (property: EventProperty): boolean => !property.deletedAt
+
+interface PropertyLike {
+  id: string
+  name: string
+  required: boolean
+  type: string
+  enumValues: string[]
+}
+
+const diffPropertySets = (
+  eventId: string,
+  eventKey: string,
+  before: PropertyLike[],
+  after: PropertyLike[],
 ): ContractDifference => {
-  const before = baseline?.properties ?? []
-  const after = event.properties.filter((property) => !property.deletedAt)
   const beforeMap = new Map(before.map((property) => [property.id, property]))
   const afterMap = new Map(after.map((property) => [property.id, property]))
   const addedProperties: string[] = []
@@ -78,8 +89,8 @@ export const compareEventContract = (
   })
 
   return {
-    eventId: event.id,
-    eventKey: event.key,
+    eventId,
+    eventKey,
     addedProperties,
     removedProperties,
     requiredChanges,
@@ -87,6 +98,169 @@ export const compareEventContract = (
     enumChanges,
   }
 }
+
+export const buildEventSnapshot = (event: EventDefinition): EventContractSnapshot => ({
+  eventId: event.id,
+  eventKey: event.key,
+  version: event.version,
+  properties: event.properties.map((property) => ({
+    id: property.id,
+    name: property.name,
+    displayName: property.displayName,
+    type: property.type,
+    required: property.required,
+    description: property.description,
+    enumValues: [...property.enumValues],
+    owner: property.owner,
+    synonyms: [...property.synonyms],
+    platforms: [...property.platforms],
+    deleted: Boolean(property.deletedAt),
+  })),
+  platformRules: event.platformRules.map((rule) => ({
+    id: rule.id,
+    platform: rule.platform,
+    enabled: rule.enabled,
+    trigger: rule.trigger,
+    owner: rule.owner,
+    requiredPropertyIds: [...rule.requiredPropertyIds],
+    note: rule.note,
+  })),
+})
+
+export const buildReleaseSnapshot = (
+  state: GovernanceState,
+  eventIds: string[],
+): EventContractSnapshot[] =>
+  eventIds
+    .map((eventId) => state.events.find((event) => event.id === eventId))
+    .filter((event): event is EventDefinition => Boolean(event))
+    .map(buildEventSnapshot)
+
+export interface SnapshotDrift {
+  eventId: string
+  eventKey: string
+  propertyChanges: string[]
+  platformRuleChanges: string[]
+  changedPropertyIds: string[]
+}
+
+export const snapshotDrift = (
+  snapshot: EventContractSnapshot,
+  event?: EventDefinition,
+): SnapshotDrift | null => {
+  if (!event) {
+    return {
+      eventId: snapshot.eventId,
+      eventKey: snapshot.eventKey,
+      propertyChanges: ['事件已从契约目录移除'],
+      platformRuleChanges: [],
+      changedPropertyIds: [],
+    }
+  }
+  const propertyChanges: string[] = []
+  const changedPropertyIds = new Set<string>()
+  const frozenProperties = snapshot.properties
+  const liveProperties = event.properties
+
+  frozenProperties.forEach((frozen) => {
+    const live = liveProperties.find((property) => property.id === frozen.id)
+    if (!live) {
+      propertyChanges.push(`字段 ${frozen.name} 已删除`)
+      changedPropertyIds.add(frozen.id)
+      return
+    }
+    const labels: string[] = []
+    if (live.type !== frozen.type) labels.push(`类型 ${frozen.type} → ${live.type}`)
+    if (live.required !== frozen.required) {
+      labels.push(`必填 ${frozen.required ? '必填' : '选填'} → ${live.required ? '必填' : '选填'}`)
+    }
+    if (live.enumValues.join('|') !== frozen.enumValues.join('|')) labels.push('枚举取值变化')
+    if (Boolean(live.deletedAt) !== frozen.deleted) {
+      labels.push(frozen.deleted ? '字段已恢复' : '字段进入删除兼容期')
+    }
+    if (live.platforms.join('|') !== frozen.platforms.join('|')) labels.push('适用平台变化')
+    if (labels.length > 0) {
+      propertyChanges.push(`字段 ${frozen.name}：${labels.join('、')}`)
+      changedPropertyIds.add(frozen.id)
+    }
+  })
+
+  liveProperties.forEach((live) => {
+    if (!frozenProperties.some((frozen) => frozen.id === live.id)) {
+      propertyChanges.push(`新增字段 ${live.name}`)
+      changedPropertyIds.add(live.id)
+    }
+  })
+
+  const platformRuleChanges: string[] = []
+  snapshot.platformRules.forEach((frozen) => {
+    const live = event.platformRules.find((rule) => rule.id === frozen.id)
+    if (!live) {
+      platformRuleChanges.push(`${frozen.platform} 平台规则已删除`)
+      return
+    }
+    const labels: string[] = []
+    if (live.enabled !== frozen.enabled) labels.push(`启停 ${frozen.enabled ? '启用' : '停用'} → ${live.enabled ? '启用' : '停用'}`)
+    if (live.trigger !== frozen.trigger) labels.push('触发时机变化')
+    if (live.requiredPropertyIds.join('|') !== frozen.requiredPropertyIds.join('|')) {
+      labels.push('平台必填字段变化')
+      live.requiredPropertyIds.forEach((id) => changedPropertyIds.add(id))
+    }
+    if (labels.length > 0) platformRuleChanges.push(`${frozen.platform}：${labels.join('、')}`)
+  })
+  event.platformRules.forEach((live) => {
+    if (!snapshot.platformRules.some((frozen) => frozen.id === live.id)) {
+      platformRuleChanges.push(`${live.platform} 新增平台规则`)
+      live.requiredPropertyIds.forEach((id) => changedPropertyIds.add(id))
+    }
+  })
+
+  if (propertyChanges.length === 0 && platformRuleChanges.length === 0) return null
+  return {
+    eventId: snapshot.eventId,
+    eventKey: snapshot.eventKey,
+    propertyChanges,
+    platformRuleChanges,
+    changedPropertyIds: [...changedPropertyIds],
+  }
+}
+
+export const releaseSnapshotDrifts = (
+  state: GovernanceState,
+  release: ReleaseCandidate,
+): SnapshotDrift[] =>
+  release.snapshot
+    .map((snapshot) => {
+      const event = state.events.find((item) => item.id === snapshot.eventId)
+      return snapshotDrift(snapshot, event)
+    })
+    .filter((item): item is SnapshotDrift => Boolean(item))
+
+export const compareEventContract = (
+  event: EventDefinition,
+  baseline?: EventVersionSnapshot,
+): ContractDifference => {
+  const before = baseline?.properties ?? []
+  const after = event.properties.filter(activeProperty)
+  return diffPropertySets(event.id, event.key, before, after)
+}
+
+export const compareSnapshotContract = (
+  snapshot: EventContractSnapshot,
+  baseline?: EventVersionSnapshot,
+): ContractDifference => {
+  const before = baseline?.properties ?? []
+  const after = snapshot.properties.filter((property) => !property.deleted)
+  return diffPropertySets(snapshot.eventId, snapshot.eventKey, before, after)
+}
+
+export const snapshotDifferences = (
+  state: GovernanceState,
+  snapshots: EventContractSnapshot[],
+): ContractDifference[] =>
+  snapshots.map((snapshot) =>
+    compareSnapshotContract(snapshot, latestBaseline(state.baselines, snapshot.eventId)),
+  )
 
 export const contractDifferences = (
   state: GovernanceState,
@@ -99,6 +273,20 @@ export const contractDifferences = (
       return compareEventContract(event, latestBaseline(state.baselines, eventId))
     })
     .filter((item): item is ContractDifference => Boolean(item))
+
+export const affectedDependencyIdsForDrifts = (
+  state: GovernanceState,
+  drifts: SnapshotDrift[],
+): string[] => {
+  const changedPropertyIds = new Set<string>()
+  drifts.forEach((drift) => drift.changedPropertyIds.forEach((id) => changedPropertyIds.add(id)))
+  if (changedPropertyIds.size === 0) return []
+  return state.dependencies
+    .filter((dependency) =>
+      dependency.propertyRefs.some((reference) => changedPropertyIds.has(reference.propertyId)),
+    )
+    .map((dependency) => dependency.id)
+}
 
 export const affectedDependencies = (
   state: GovernanceState,
@@ -345,7 +533,8 @@ export const releaseReadiness = (
   )
   const migrationScore = migrationTotal === 0 ? 40 : (migrationDone / migrationTotal) * 40
   const approvalScore = approvalTotal === 0 ? 30 : (approvalDone / approvalTotal) * 30
-  return Math.max(0, Math.round(migrationScore + approvalScore + 30 - issuePenalty))
+  const driftPenalty = release.driftDetected ? 20 : 0
+  return Math.max(0, Math.round(migrationScore + approvalScore + 30 - issuePenalty - driftPenalty))
 }
 
 export const propertyReferences = (

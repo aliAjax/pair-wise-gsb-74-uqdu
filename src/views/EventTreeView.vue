@@ -231,10 +231,21 @@ const saveProperty = async (): Promise<void> => {
     id: propertyForm.id || createId('prop'),
     eventId: selectedEvent.value.id,
   }
-  store.saveProperty(selectedEvent.value.id, saved)
+  const notices = store.saveProperty(selectedEvent.value.id, saved)
   propertyEditorVisible.value = false
   await invalidate()
   await MessagePlugin.success('属性已保存')
+  notifyInvalidations(notices)
+}
+
+const notifyInvalidations = (
+  notices: Array<{ version: string; confirmations: number; approvals: number }>,
+): void => {
+  notices.forEach((notice) => {
+    MessagePlugin.warning(
+      `候选 ${notice.version} 冻结快照已漂移：${notice.confirmations} 项迁移确认、${notice.approvals} 项审批失效，需在发布评审中重算`,
+    )
+  })
 }
 
 const openRuleEditor = (rule?: PlatformRule): void => {
@@ -262,7 +273,7 @@ const saveRule = async (): Promise<void> => {
     await MessagePlugin.error('平台触发时机和负责人不能为空')
     return
   }
-  store.savePlatformRule(selectedEvent.value.id, {
+  const notices = store.savePlatformRule(selectedEvent.value.id, {
     ...structuredClone(platformForm),
     id: platformForm.id || createId('rule'),
     eventId: selectedEvent.value.id,
@@ -270,6 +281,7 @@ const saveRule = async (): Promise<void> => {
   platformEditorVisible.value = false
   await invalidate()
   await MessagePlugin.success('平台规则已保存')
+  notifyInvalidations(notices)
 }
 
 const removeProperty = async (propertyId: string): Promise<void> => {
@@ -281,7 +293,8 @@ const removeProperty = async (propertyId: string): Promise<void> => {
 
 const toggleProperty = (row: EventProperty, value: boolean): void => {
   if (!selectedEvent.value) return
-  store.saveProperty(selectedEvent.value.id, { ...row, required: value })
+  const notices = store.saveProperty(selectedEvent.value.id, { ...row, required: value })
+  notifyInvalidations(notices)
 }
 
 const updateRequired = (row: EventProperty, value: unknown): void => {

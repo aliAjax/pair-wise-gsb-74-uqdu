@@ -16,7 +16,8 @@ const rollbackVisible = ref(false)
 const verifyVisible = ref(false)
 const selectedRollbackId = ref('')
 const form = reactive({
-  releaseId: store.data.releases[0]?.id ?? '',
+  targetReleaseId:
+    store.data.releases.find((release) => release.status === 'published')?.id ?? '',
   reason: '',
   scope: '',
   evidence: '',
@@ -25,15 +26,21 @@ const verifyForm = reactive({
   evidence: '',
 })
 
+const publishedTargets = computed(() =>
+  store.data.releases.filter((release) => release.status === 'published'),
+)
+
 const rollbackRecords = computed(() =>
   store.data.rollbacks.map((record) => ({
     ...record,
     release: store.data.releases.find((release) => release.id === record.releaseId),
+    target: store.data.releases.find((release) => release.id === record.targetReleaseId),
   })),
 )
 
 const openRollback = (): void => {
-  form.releaseId = store.data.releases.find((release) => release.status === 'published')?.id ?? ''
+  form.targetReleaseId =
+    store.data.releases.find((release) => release.status === 'published')?.id ?? ''
   form.reason = ''
   form.scope = ''
   form.evidence = ''
@@ -41,13 +48,18 @@ const openRollback = (): void => {
 }
 
 const execute = async (): Promise<void> => {
-  if (!form.releaseId || !form.reason.trim() || !form.scope.trim() || !form.evidence.trim()) {
-    await MessagePlugin.error('版本、回滚原因、影响范围和证据编号不能为空')
+  if (
+    !form.targetReleaseId ||
+    !form.reason.trim() ||
+    !form.scope.trim() ||
+    !form.evidence.trim()
+  ) {
+    await MessagePlugin.error('回滚目标版本、回滚原因、影响范围和证据编号不能为空')
     return
   }
-  store.executeRollback(form.releaseId, form.reason, form.scope, form.evidence)
+  store.executeRollback(form.targetReleaseId, form.reason, form.scope, form.evidence)
   rollbackVisible.value = false
-  await MessagePlugin.success('回滚指令已记录，请继续执行结果验证')
+  await MessagePlugin.success('已恢复目标已发布快照（之后新增契约保留），请继续执行结果验证')
 }
 
 const openVerify = (rollbackId: string): void => {
@@ -72,14 +84,14 @@ const verify = async (): Promise<void> => {
     <PageHeader
       eyebrow="故障恢复"
       title="回滚与验证记录"
-      description="记录契约发布后的回滚原因、客户端影响范围、执行证据和业务验证结果。"
+      description="回滚将事件契约恢复到目标版本的已发布快照，目标版本之后新增的事件、字段和平台规则全部保留；回滚本身作为独立审计记录。"
     />
 
     <section class="panel filter-panel">
       <div class="toolbar-row">
         <div>
           <strong>发布回滚台账</strong>
-          <p class="page-description">回滚是独立审计记录，不删除原发布版本和下游迁移确认。</p>
+          <p class="page-description">仅可选择已发布版本作为恢复目标，回滚不删除任何后续新增契约。</p>
         </div>
         <div class="filter-actions">
           <t-button theme="danger" @click="openRollback">
@@ -120,8 +132,11 @@ const verify = async (): Promise<void> => {
           <div class="rollback-main">
             <div class="rollback-head">
               <div>
-                <strong>{{ record.version }}</strong>
-                <span>{{ record.release?.title ?? '历史发布版本' }}</span>
+                <strong>{{ record.version }} → 恢复 {{ record.targetVersion }}</strong>
+                <span>
+                  回滚版本 {{ record.release?.title ?? '历史发布版本' }}；目标
+                  {{ record.target?.title ?? '历史已发布快照' }}
+                </span>
               </div>
               <StatusTag :value="record.status" />
             </div>
@@ -159,19 +174,22 @@ const verify = async (): Promise<void> => {
       </div>
     </section>
 
-    <t-dialog v-model:visible="rollbackVisible" header="执行契约回滚" width="680px" :footer="false">
+    <t-dialog v-model:visible="rollbackVisible" header="恢复已发布快照" width="680px" :footer="false">
       <div class="editor-form">
         <div class="field field-wide">
-          <label>回滚目标版本</label>
+          <label>恢复目标（已发布版本）</label>
           <t-select
-            v-model="form.releaseId"
+            v-model="form.targetReleaseId"
             :options="
-              store.data.releases.map((release) => ({
-                label: `${release.version} ${release.title}`,
+              publishedTargets.map((release) => ({
+                label: `${release.version} ${release.title}（快照修订 #${release.snapshotRevision}）`,
                 value: release.id,
               }))
             "
           />
+          <p class="field-hint">
+            目标快照中的字段、必填与平台规则将覆盖当前契约；目标版本之后新增的事件、字段与规则保留不删除。
+          </p>
         </div>
         <div class="field field-wide">
           <label>回滚原因</label>
@@ -188,7 +206,7 @@ const verify = async (): Promise<void> => {
       </div>
       <div class="dialog-footer">
         <t-button variant="outline" @click="rollbackVisible = false">取消</t-button>
-        <t-button theme="danger" @click="execute">确认执行</t-button>
+        <t-button theme="danger" @click="execute">确认恢复</t-button>
       </div>
     </t-dialog>
 
@@ -212,6 +230,13 @@ const verify = async (): Promise<void> => {
 <style scoped>
 .filter-panel {
   padding: 14px 16px;
+}
+
+.field-hint {
+  margin: 6px 0 0;
+  color: #b42318;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .rollback-summary {

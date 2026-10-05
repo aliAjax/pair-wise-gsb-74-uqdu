@@ -92,19 +92,82 @@ export interface MigrationConfirmation {
   id: string
   dependencyId: string
   version: string
-  status: 'pending' | 'confirmed' | 'rejected'
+  status: 'pending' | 'confirmed' | 'rejected' | 'invalidated'
   reviewer: string
   note: string
   confirmedAt?: string
+  invalidatedAt?: string
+  invalidReason?: string
 }
 
 export interface ReleaseApproval {
   id: string
   role: 'data' | 'product' | 'client' | 'qa'
   actor: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'invalidated'
   comment: string
   createdAt?: string
+  invalidatedAt?: string
+  invalidReason?: string
+}
+
+export interface SnapshotProperty {
+  id: string
+  name: string
+  displayName: string
+  type: PropertyType
+  required: boolean
+  description: string
+  enumValues: string[]
+  owner: string
+  synonyms: string[]
+  platforms: Platform[]
+  deleted: boolean
+}
+
+export interface SnapshotPlatformRule {
+  id: string
+  platform: Platform
+  enabled: boolean
+  trigger: string
+  owner: string
+  requiredPropertyIds: string[]
+  note: string
+}
+
+export interface EventContractSnapshot {
+  eventId: string
+  eventKey: string
+  version: string
+  properties: SnapshotProperty[]
+  platformRules: SnapshotPlatformRule[]
+}
+
+export type ReceiptKind = 'migration' | 'approval'
+export type ReceiptStatus = 'accepted' | 'rejected' | 'duplicate' | 'failed'
+
+export interface ReceiptPayload {
+  reviewer?: string
+  note?: string
+  actor?: string
+  comment?: string
+  decision?: 'confirmed' | 'approved' | 'rejected'
+}
+
+export interface ReceiptRecord {
+  id: string
+  releaseId: string
+  kind: ReceiptKind
+  targetId: string
+  clientId: string
+  clientLabel: string
+  idempotencyKey: string
+  baseRevision: number
+  status: ReceiptStatus
+  payload: ReceiptPayload
+  message: string
+  createdAt: string
+  processedAt?: string
 }
 
 export interface ReleaseCandidate {
@@ -113,10 +176,17 @@ export interface ReleaseCandidate {
   title: string
   status: ReleaseStatus
   eventIds: string[]
+  snapshot: EventContractSnapshot[]
+  snapshotRevision: number
+  driftDetected: boolean
+  recalculationQueue: string[]
+  frozenAt: string
+  recalculatedAt?: string
   affectedDependencyIds: string[]
   differences: ContractDifference[]
   migrationConfirmations: MigrationConfirmation[]
   approvals: ReleaseApproval[]
+  receipts: ReceiptRecord[]
   createdAt: string
   publishedAt?: string
 }
@@ -137,6 +207,8 @@ export interface RollbackRecord {
   id: string
   releaseId: string
   version: string
+  targetReleaseId: string
+  targetVersion: string
   reason: string
   operator: string
   scope: string

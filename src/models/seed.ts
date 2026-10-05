@@ -1,11 +1,13 @@
 import type {
   AuditEvent,
   DownstreamDependency,
+  EventContractSnapshot,
   EventDefinition,
   EventVersionSnapshot,
   GovernanceState,
   ReleaseCandidate,
 } from './domain'
+import { buildEventSnapshot, compareSnapshotContract, latestBaseline } from '@/services/selectors'
 
 const events: EventDefinition[] = [
   {
@@ -740,7 +742,15 @@ const baselines: EventVersionSnapshot[] = [
     createdAt: '2026-09-05T10:00:00+08:00',
     status: 'published',
     properties: [
-      ...structuredClone(events[2]!.properties.filter((property) => property.id !== 'prop-014')),
+      ...structuredClone(
+        events[2]!.properties.filter(
+          (property) => property.id !== 'prop-014' && property.id !== 'prop-013',
+        ),
+      ),
+      {
+        ...events[2]!.properties.find((property) => property.id === 'prop-013')!,
+        enumValues: ['tap', 'voice'],
+      },
       {
         ...events[2]!.properties.find((property) => property.id === 'prop-014')!,
         type: 'string',
@@ -757,7 +767,6 @@ const baselines: EventVersionSnapshot[] = [
         owner: '搜索产品组',
         synonyms: ['ab_test_id'],
         platforms: ['web', 'ios', 'android'],
-        deletedAt: '2026-09-28T09:35:00+08:00',
       },
     ],
   },
@@ -779,6 +788,29 @@ const baselines: EventVersionSnapshot[] = [
   },
 ]
 
+// rel-001 冻结于 2026-09-25：order_id 已按十月版本改为 string（相对基线的破坏性差异）；
+// page_no 仍为 string、click_type 尚无 keyboard（9/28 评审期间又被修改，构成快照漂移）
+const buildRel001Snapshot = (): EventContractSnapshot[] => {
+  const frozen = ['evt-001', 'evt-003', 'evt-005'].map((eventId) =>
+    buildEventSnapshot(events.find((event) => event.id === eventId)!),
+  )
+  const searchClick = frozen.find((snapshot) => snapshot.eventId === 'evt-003')!
+  const pageNo = searchClick.properties.find((property) => property.id === 'prop-014')!
+  pageNo.type = 'string'
+  const clickType = searchClick.properties.find((property) => property.id === 'prop-013')!
+  clickType.enumValues = ['tap', 'voice']
+  return frozen
+}
+
+// rel-000 发布快照与当时发布的事件一致
+const buildRel000Snapshot = (): EventContractSnapshot[] =>
+  ['evt-002', 'evt-004', 'evt-006'].map((eventId) =>
+    buildEventSnapshot(events.find((event) => event.id === eventId)!),
+  )
+
+const rel001Snapshot = buildRel001Snapshot()
+const rel000Snapshot = buildRel000Snapshot()
+
 const releases: ReleaseCandidate[] = [
   {
     id: 'rel-001',
@@ -786,27 +818,15 @@ const releases: ReleaseCandidate[] = [
     title: '十月核心埋点契约升级',
     status: 'reviewing',
     eventIds: ['evt-001', 'evt-003', 'evt-005'],
+    snapshot: rel001Snapshot,
+    snapshotRevision: 1,
+    driftDetected: true,
+    recalculationQueue: ['mig-002', 'appr-001'],
+    frozenAt: '2026-09-25T10:30:00+08:00',
     affectedDependencyIds: ['dep-001', 'dep-004', 'dep-005', 'dep-006'],
-    differences: [
-      {
-        eventId: 'evt-001',
-        eventKey: 'trade_order_submit',
-        addedProperties: [],
-        removedProperties: [],
-        requiredChanges: ['order_id 必填规则仍需确认'],
-        typeChanges: ['order_id: number → string'],
-        enumChanges: [],
-      },
-      {
-        eventId: 'evt-003',
-        eventKey: 'search_result_click',
-        addedProperties: [],
-        removedProperties: [],
-        requiredChanges: [],
-        typeChanges: ['page_no: string → number'],
-        enumChanges: ['click_type 新增 keyboard'],
-      },
-    ],
+    differences: rel001Snapshot.map((snapshot) =>
+      compareSnapshotContract(snapshot, latestBaseline(baselines, snapshot.eventId)),
+    ),
     migrationConfirmations: [
       {
         id: 'mig-001',
@@ -820,10 +840,12 @@ const releases: ReleaseCandidate[] = [
         id: 'mig-002',
         dependencyId: 'dep-004',
         version: '2026.10.0',
-        status: 'confirmed',
+        status: 'invalidated',
         reviewer: '搜索数据组',
         note: '数据集已增加 page_no 数值转换。',
         confirmedAt: '2026-09-27T14:20:00+08:00',
+        invalidatedAt: '2026-09-28T09:40:00+08:00',
+        invalidReason: '字段 page_no 类型/必填/枚举/平台发生变化',
       },
       {
         id: 'mig-003',
@@ -847,9 +869,11 @@ const releases: ReleaseCandidate[] = [
         id: 'appr-001',
         role: 'data',
         actor: '顾清',
-        status: 'approved',
+        status: 'invalidated',
         comment: '指标口径影响已评估。',
         createdAt: '2026-09-27T16:00:00+08:00',
+        invalidatedAt: '2026-09-28T09:40:00+08:00',
+        invalidReason: '字段 page_no 类型/必填/枚举/平台发生变化',
       },
       {
         id: 'appr-002',
@@ -873,6 +897,46 @@ const releases: ReleaseCandidate[] = [
         comment: '',
       },
     ],
+    receipts: [
+      {
+        id: 'rcpt-001',
+        releaseId: 'rel-001',
+        kind: 'migration',
+        targetId: 'mig-002',
+        clientId: 'client-a',
+        clientLabel: '客户端窗口 A（Web 2.20.1）',
+        idempotencyKey: 'idem-seed-mig002',
+        baseRevision: 1,
+        status: 'accepted',
+        payload: {
+          reviewer: '搜索数据组',
+          note: '数据集已增加 page_no 数值转换。',
+          decision: 'confirmed',
+        },
+        message: '迁移确认已受理（搜索点击率报表）',
+        createdAt: '2026-09-27T14:20:00+08:00',
+        processedAt: '2026-09-27T14:20:00+08:00',
+      },
+      {
+        id: 'rcpt-002',
+        releaseId: 'rel-001',
+        kind: 'approval',
+        targetId: 'appr-001',
+        clientId: 'client-a',
+        clientLabel: '客户端窗口 A（Web 2.20.1）',
+        idempotencyKey: 'idem-seed-appr001',
+        baseRevision: 1,
+        status: 'accepted',
+        payload: {
+          actor: '顾清',
+          comment: '指标口径影响已评估。',
+          decision: 'approved',
+        },
+        message: '审批通过回执已受理',
+        createdAt: '2026-09-27T16:00:00+08:00',
+        processedAt: '2026-09-27T16:00:00+08:00',
+      },
+    ],
     createdAt: '2026-09-25T10:30:00+08:00',
   },
   {
@@ -881,8 +945,16 @@ const releases: ReleaseCandidate[] = [
     title: '九月埋点基线',
     status: 'published',
     eventIds: ['evt-002', 'evt-004', 'evt-006'],
+    snapshot: rel000Snapshot,
+    snapshotRevision: 1,
+    driftDetected: false,
+    recalculationQueue: [],
+    frozenAt: '2026-08-25T09:00:00+08:00',
+    recalculatedAt: '2026-08-30T12:00:00+08:00',
     affectedDependencyIds: ['dep-002', 'dep-003'],
-    differences: [],
+    differences: rel000Snapshot.map((snapshot) =>
+      compareSnapshotContract(snapshot, latestBaseline(baselines, snapshot.eventId)),
+    ),
     migrationConfirmations: [
       {
         id: 'mig-005',
@@ -937,6 +1009,7 @@ const releases: ReleaseCandidate[] = [
         createdAt: '2026-08-30T11:50:00+08:00',
       },
     ],
+    receipts: [],
     createdAt: '2026-08-25T09:00:00+08:00',
     publishedAt: '2026-08-30T12:00:00+08:00',
   },
@@ -1042,6 +1115,8 @@ export const createSeedState = (): GovernanceState => ({
       id: 'rollback-001',
       releaseId: 'rel-legacy-008',
       version: '2026.08.1',
+      targetReleaseId: 'rel-legacy-007',
+      targetVersion: '2026.08.0',
       reason: 'Android 端 page_no 传参格式错误导致搜索报表异常。',
       operator: '江驰',
       scope: 'Android 2.18.0 至 2.18.2',

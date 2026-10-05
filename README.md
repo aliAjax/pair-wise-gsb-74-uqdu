@@ -34,4 +34,11 @@ npm run build
 - `src/services/api.ts`：Axios 实例与本地 API 适配器
 - `src/composables/useGovernanceQueries.ts`：TanStack Query 查询组合
 - `src/stores/governance.ts`：Pinia 编辑、审批、废弃和回滚状态
-- `src/services/selectors.ts`：契约比较、影响分析和校验规则
+- `src/services/selectors.ts`：契约快照、快照漂移、契约比较、影响分析和校验规则
+
+## 契约快照与回执语义
+
+- 创建发布候选时冻结完整契约快照（字段、必填、枚举、平台规则），候选携带 `snapshotRevision` 修订号；差异、受影响下游、发布与回滚均以快照为准
+- 两个客户端窗口各自持有已同步修订：回执基准修订与当前快照不一致时退回；同一幂等键的回执只处理一次（重复返回 `duplicate`）；校验失败或被退回的回执保留在回执台账中，可沿用原幂等键重试
+- 评审期间字段、必填或平台规则发生变化时，相关下游迁移确认与该候选已通过的审批置为失效（`invalidated`）并列待重算；重算后快照刷新、修订号自增、失效项回到待处理
+- 发布使用当前冻结快照（存在未重算漂移时拦截）；回滚将契约恢复到目标版本的已发布快照，目标版本之后新增的事件、字段和平台规则保留不删除

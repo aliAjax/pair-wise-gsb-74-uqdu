@@ -30,8 +30,9 @@ const pendingMigrations = computed(
   () =>
     currentRelease.value?.migrationConfirmations.filter((item) => item.status !== 'confirmed') ?? [],
 )
-const pendingApprovals = computed(
-  () => currentRelease.value?.approvals.filter((item) => item.status === 'pending') ?? [],
+const approvedApprovals = computed(
+  () =>
+    currentRelease.value?.approvals.filter((item) => item.status === 'approved').length ?? 0,
 )
 </script>
 
@@ -123,7 +124,7 @@ const pendingApprovals = computed(
             <div class="progress-head">
               <span>批量审批</span>
               <strong>
-                {{ currentRelease.approvals.length - pendingApprovals.length }}/{{
+                {{ approvedApprovals }}/{{
                   currentRelease.approvals.length
                 }}
               </strong>
@@ -132,9 +133,7 @@ const pendingApprovals = computed(
               :percentage="
                 currentRelease.approvals.length
                   ? Math.round(
-                      ((currentRelease.approvals.length - pendingApprovals.length) /
-                        currentRelease.approvals.length) *
-                        100,
+                      (approvedApprovals / currentRelease.approvals.length) * 100,
                     )
                   : 100
               "

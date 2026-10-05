@@ -1,7 +1,8 @@
+import { toRaw } from 'vue'
 import type { GovernanceState } from '@/models/domain'
 import { createSeedState } from '@/models/seed'
 
-const STORAGE_KEY = 'eventrail-governance-v1'
+const STORAGE_KEY = 'eventrail-governance-v2'
 
 export const loadState = (): GovernanceState => {
   const raw = localStorage.getItem(STORAGE_KEY)
@@ -20,7 +21,7 @@ export const loadState = (): GovernanceState => {
 }
 
 export const saveState = (state: GovernanceState): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(structuredClone(state)))
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(toRaw(state)))
 }
 
 export const resetState = (): GovernanceState => {
