@@ -47,7 +47,7 @@ const execute = async (): Promise<void> => {
   }
   store.executeRollback(form.releaseId, form.reason, form.scope, form.evidence)
   rollbackVisible.value = false
-  await MessagePlugin.success('回滚指令已记录，请继续执行结果验证')
+  await MessagePlugin.success('回滚已执行：目标已发布快照恢复生效，之后新增的契约已保留，请继续验证')
 }
 
 const openVerify = (rollbackId: string): void => {
@@ -79,7 +79,9 @@ const verify = async (): Promise<void> => {
       <div class="toolbar-row">
         <div>
           <strong>发布回滚台账</strong>
-          <p class="page-description">回滚是独立审计记录，不删除原发布版本和下游迁移确认。</p>
+          <p class="page-description">
+            回滚将恢复目标版本的已发布快照，快照之后新增的契约字段与平台规则保留；事件范围重叠的更新发布标记为已回滚。
+          </p>
         </div>
         <div class="filter-actions">
           <t-button theme="danger" @click="openRollback">
@@ -162,14 +164,16 @@ const verify = async (): Promise<void> => {
     <t-dialog v-model:visible="rollbackVisible" header="执行契约回滚" width="680px" :footer="false">
       <div class="editor-form">
         <div class="field field-wide">
-          <label>回滚目标版本</label>
+          <label>回滚目标版本（恢复其已发布快照）</label>
           <t-select
             v-model="form.releaseId"
             :options="
-              store.data.releases.map((release) => ({
-                label: `${release.version} ${release.title}`,
-                value: release.id,
-              }))
+              store.data.releases
+                .filter((release) => release.status === 'published')
+                .map((release) => ({
+                  label: `${release.version} ${release.title} · 快照 #${release.snapshot.hash.slice(0, 8)}`,
+                  value: release.id,
+                }))
             "
           />
         </div>

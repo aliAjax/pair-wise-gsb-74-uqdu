@@ -5,8 +5,10 @@ import type {
   EventVersionSnapshot,
   GovernanceState,
   ReleaseCandidate,
+  ReleaseContractSnapshot,
   SampleValidationResult,
   Severity,
+  SnapshotEventContract,
   ValidationIssue,
 } from '@/models/domain'
 
@@ -19,6 +21,9 @@ const normalize = (value: string): string =>
 
 const tokens = (value: string): Set<string> =>
   new Set(normalize(value).split('_').filter((token) => token.length > 1))
+
+// 状态可能来自 Vue 响应式代理，structuredClone 无法序列化，统一用 JSON 深拷贝
+export const cloneContractData = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
 const similarity = (left: string, right: string): number => {
   const a = tokens(left)
@@ -36,8 +41,70 @@ export const latestBaseline = (
     .filter((baseline) => baseline.eventId === eventId)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
 
+const canonicalEventContract = (event: SnapshotEventContract): string =>
+  JSON.stringify({
+    eventId: event.eventId,
+    eventKey: event.eventKey,
+    version: event.version,
+    properties: event.properties
+      .map((property) => [
+        property.id,
+        property.name,
+        property.type,
+        property.required ? 1 : 0,
+        property.enumValues.join('|'),
+        [...property.platforms].sort().join('|'),
+        property.deletedAt ? 1 : 0,
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    platformRules: event.platformRules
+      .map((rule) => [
+        rule.id,
+        rule.platform,
+        rule.enabled ? 1 : 0,
+        rule.trigger,
+        [...rule.requiredPropertyIds].sort().join('|'),
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  })
+
+export const hashContractText = (input: string): string => {
+  let hash = 5381
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) + hash + input.charCodeAt(index)) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
+
+export const hashSnapshotEvent = (event: SnapshotEventContract): string =>
+  hashContractText(canonicalEventContract(event))
+
+export const buildReleaseSnapshot = (
+  events: EventDefinition[],
+  eventIds: string[],
+  id: string,
+): ReleaseContractSnapshot => {
+  const snapshotEvents: SnapshotEventContract[] = eventIds
+    .map((eventId) => events.find((item) => item.id === eventId))
+    .filter((item): item is EventDefinition => Boolean(item))
+    .map((event) => ({
+      eventId: event.id,
+      eventKey: event.key,
+      version: event.version,
+      properties: cloneContractData(event.properties),
+      platformRules: cloneContractData(event.platformRules),
+    }))
+  return {
+    id,
+    hash: hashContractText(snapshotEvents.map(hashSnapshotEvent).sort().join('|')),
+    eventIds: [...eventIds],
+    events: snapshotEvents,
+    createdAt: new Date().toISOString(),
+  }
+}
+
 export const compareEventContract = (
-  event: EventDefinition,
+  event: Pick<EventDefinition, 'id' | 'key' | 'properties'>,
   baseline?: EventVersionSnapshot,
 ): ContractDifference => {
   const before = baseline?.properties ?? []
@@ -99,6 +166,17 @@ export const contractDifferences = (
       return compareEventContract(event, latestBaseline(state.baselines, eventId))
     })
     .filter((item): item is ContractDifference => Boolean(item))
+
+export const snapshotDifferences = (
+  state: Pick<GovernanceState, 'baselines'>,
+  snapshot: ReleaseContractSnapshot,
+): ContractDifference[] =>
+  snapshot.events.map((event) =>
+    compareEventContract(
+      { id: event.eventId, key: event.eventKey, properties: event.properties },
+      latestBaseline(state.baselines, event.eventId),
+    ),
+  )
 
 export const affectedDependencies = (
   state: GovernanceState,
@@ -333,8 +411,11 @@ export const releaseReadiness = (
   release: ReleaseCandidate,
   issues: ValidationIssue[],
 ): number => {
-  const migrationTotal = release.migrationConfirmations.length
-  const migrationDone = release.migrationConfirmations.filter(
+  const scopedConfirmations = release.migrationConfirmations.filter((item) =>
+    release.affectedDependencyIds.includes(item.dependencyId),
+  )
+  const migrationTotal = scopedConfirmations.length
+  const migrationDone = scopedConfirmations.filter(
     (item) => item.status === 'confirmed',
   ).length
   const approvalTotal = release.approvals.length

@@ -6,6 +6,7 @@ import type {
   GovernanceState,
   ReleaseCandidate,
 } from './domain'
+import { buildReleaseSnapshot } from '@/services/selectors'
 
 const events: EventDefinition[] = [
   {
@@ -779,6 +780,17 @@ const baselines: EventVersionSnapshot[] = [
   },
 ]
 
+const releaseSnapshotReviewing = buildReleaseSnapshot(
+  events,
+  ['evt-001', 'evt-003', 'evt-005'],
+  'snap-rel-001',
+)
+const releaseSnapshotPublished = buildReleaseSnapshot(
+  events,
+  ['evt-002', 'evt-004', 'evt-006'],
+  'snap-rel-000',
+)
+
 const releases: ReleaseCandidate[] = [
   {
     id: 'rel-001',
@@ -787,6 +799,8 @@ const releases: ReleaseCandidate[] = [
     status: 'reviewing',
     eventIds: ['evt-001', 'evt-003', 'evt-005'],
     affectedDependencyIds: ['dep-001', 'dep-004', 'dep-005', 'dep-006'],
+    snapshot: releaseSnapshotReviewing,
+    processedReceiptKeys: [],
     differences: [
       {
         eventId: 'evt-001',
@@ -815,6 +829,7 @@ const releases: ReleaseCandidate[] = [
         status: 'pending',
         reviewer: '数据产品组',
         note: '',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'mig-002',
@@ -824,6 +839,7 @@ const releases: ReleaseCandidate[] = [
         reviewer: '搜索数据组',
         note: '数据集已增加 page_no 数值转换。',
         confirmedAt: '2026-09-27T14:20:00+08:00',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'mig-003',
@@ -832,6 +848,7 @@ const releases: ReleaseCandidate[] = [
         status: 'pending',
         reviewer: '增长实验组',
         note: '等待实验口径冻结后确认。',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'mig-004',
@@ -840,6 +857,7 @@ const releases: ReleaseCandidate[] = [
         status: 'pending',
         reviewer: '营销数据组',
         note: '旧事件下线前保持只读兼容。',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
     ],
     approvals: [
@@ -850,6 +868,7 @@ const releases: ReleaseCandidate[] = [
         status: 'approved',
         comment: '指标口径影响已评估。',
         createdAt: '2026-09-27T16:00:00+08:00',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'appr-002',
@@ -857,6 +876,7 @@ const releases: ReleaseCandidate[] = [
         actor: '丁禾',
         status: 'pending',
         comment: '',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'appr-003',
@@ -864,6 +884,7 @@ const releases: ReleaseCandidate[] = [
         actor: '江驰',
         status: 'pending',
         comment: '',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
       {
         id: 'appr-004',
@@ -871,6 +892,7 @@ const releases: ReleaseCandidate[] = [
         actor: '余安',
         status: 'pending',
         comment: '',
+        snapshotHash: releaseSnapshotReviewing.hash,
       },
     ],
     createdAt: '2026-09-25T10:30:00+08:00',
@@ -882,6 +904,8 @@ const releases: ReleaseCandidate[] = [
     status: 'published',
     eventIds: ['evt-002', 'evt-004', 'evt-006'],
     affectedDependencyIds: ['dep-002', 'dep-003'],
+    snapshot: releaseSnapshotPublished,
+    processedReceiptKeys: [],
     differences: [],
     migrationConfirmations: [
       {
@@ -892,6 +916,7 @@ const releases: ReleaseCandidate[] = [
         reviewer: 'SRE 数据组',
         note: '监控规则已验证。',
         confirmedAt: '2026-08-29T15:00:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
       {
         id: 'mig-006',
@@ -901,6 +926,7 @@ const releases: ReleaseCandidate[] = [
         reviewer: '增长算法组',
         note: '模型特征口径无变化。',
         confirmedAt: '2026-08-30T11:00:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
     ],
     approvals: [
@@ -911,6 +937,7 @@ const releases: ReleaseCandidate[] = [
         status: 'approved',
         comment: '通过。',
         createdAt: '2026-08-30T11:20:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
       {
         id: 'appr-006',
@@ -919,6 +946,7 @@ const releases: ReleaseCandidate[] = [
         status: 'approved',
         comment: '通过。',
         createdAt: '2026-08-30T11:30:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
       {
         id: 'appr-007',
@@ -927,6 +955,7 @@ const releases: ReleaseCandidate[] = [
         status: 'approved',
         comment: '通过。',
         createdAt: '2026-08-30T11:40:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
       {
         id: 'appr-008',
@@ -935,6 +964,7 @@ const releases: ReleaseCandidate[] = [
         status: 'approved',
         comment: '示例校验通过。',
         createdAt: '2026-08-30T11:50:00+08:00',
+        snapshotHash: releaseSnapshotPublished.hash,
       },
     ],
     createdAt: '2026-08-25T09:00:00+08:00',

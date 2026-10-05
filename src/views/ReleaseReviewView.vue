@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useQueryClient } from '@tanstack/vue-query'
 import {
   AddIcon,
@@ -13,6 +13,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useReleaseQuery, useReleasesQuery } from '@/composables/useGovernanceQueries'
 import type { ReleaseApproval } from '@/models/domain'
+import { STORAGE_KEY, createId } from '@/services/repository'
 import { releaseReadiness } from '@/services/selectors'
 import { useGovernanceStore } from '@/stores/governance'
 
@@ -33,6 +34,11 @@ const release = computed(
 )
 const releases = computed(() => releasesQuery.data.value ?? store.data.releases)
 const readiness = computed(() => (release.value ? releaseReadiness(release.value, store.issues) : 0))
+const staleReceiptCount = computed(
+  () =>
+    (release.value?.migrationConfirmations.filter((item) => item.status === 'stale').length ?? 0) +
+    (release.value?.approvals.filter((item) => item.status === 'stale').length ?? 0),
+)
 
 const createVisible = ref(false)
 const migrationVisible = ref(false)
@@ -46,10 +52,14 @@ const migrationForm = reactive({
   confirmationId: '',
   reviewer: '',
   note: '',
+  snapshotHash: '',
+  receiptKey: '',
 })
 const selectedApprovalIds = ref<string[]>([])
 const approvalComment = ref('')
 const singleApproval = ref<ReleaseApproval | null>(null)
+const approvalSnapshotHash = ref('')
+const approvalReceiptKey = ref('')
 
 const eventName = (eventId: string): string => {
   const event = store.data.events.find((item) => item.id === eventId)
@@ -59,6 +69,7 @@ const dependencyName = (dependencyId: string): string =>
   store.data.dependencies.find((dependency) => dependency.id === dependencyId)?.name ?? dependencyId
 const roleLabel = (role: ReleaseApproval['role']): string =>
   ({ data: '数据负责人', product: '产品负责人', client: '客户端负责人', qa: '测试负责人' })[role]
+const shortHash = (hash: string): string => `#${hash.slice(0, 8)}`
 
 const invalidate = async (): Promise<void> => {
   await queryClient.invalidateQueries({ queryKey: ['release'] })
@@ -66,6 +77,13 @@ const invalidate = async (): Promise<void> => {
   await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
   await queryClient.invalidateQueries({ queryKey: ['lineage'] })
 }
+
+// 其他窗口写入本地存储后刷新查询缓存，保证两个窗口看到同一份快照
+const handleStorage = (event: StorageEvent): void => {
+  if (event.key === STORAGE_KEY) void invalidate()
+}
+onMounted(() => window.addEventListener('storage', handleStorage))
+onBeforeUnmount(() => window.removeEventListener('storage', handleStorage))
 
 const openCreate = (): void => {
   createForm.version = `2026.${String(Number(store.data.currentVersion.split('.')[1] ?? 10) + 1).padStart(2, '0')}.0`
@@ -83,17 +101,19 @@ const createRelease = async (): Promise<void> => {
   releaseId.value = created.id
   createVisible.value = false
   await invalidate()
-  await MessagePlugin.success('发布候选已创建，已生成下游迁移清单')
+  await MessagePlugin.success(`发布候选已创建，契约快照 ${shortHash(created.snapshot.hash)} 已冻结`)
 }
 
 const openMigration = (confirmationId: string): void => {
   const confirmation = release.value?.migrationConfirmations.find(
     (item) => item.id === confirmationId,
   )
-  if (!confirmation) return
+  if (!confirmation || !release.value) return
   migrationForm.confirmationId = confirmationId
-  migrationForm.reviewer = confirmation.reviewer
-  migrationForm.note = confirmation.note
+  migrationForm.reviewer = confirmation.lastAttempt?.reviewer ?? confirmation.reviewer
+  migrationForm.note = confirmation.lastAttempt?.note ?? confirmation.note
+  migrationForm.snapshotHash = release.value.snapshot.hash
+  migrationForm.receiptKey = createId('rcpt')
   migrationVisible.value = true
 }
 
@@ -102,37 +122,59 @@ const confirmMigration = async (): Promise<void> => {
     await MessagePlugin.error('确认人和迁移说明不能为空')
     return
   }
-  store.confirmMigration(
+  const result = store.confirmMigration(
     release.value.id,
     migrationForm.confirmationId,
     migrationForm.reviewer,
     migrationForm.note,
+    migrationForm.snapshotHash,
+    migrationForm.receiptKey,
   )
   migrationVisible.value = false
   await invalidate()
+  if (!result.ok) {
+    await MessagePlugin.error('契约快照已变更，回执被退回；内容已保留，请核对最新差异后重新确认')
+    return
+  }
+  if (result.duplicate) {
+    await MessagePlugin.info('重复回执已忽略，仅处理一次')
+    return
+  }
   await MessagePlugin.success('下游迁移已确认')
 }
 
 const openApproval = (approval: ReleaseApproval): void => {
   singleApproval.value = approval
-  approvalComment.value = approval.comment
+  approvalComment.value = approval.lastAttempt?.comment ?? approval.comment
+  approvalSnapshotHash.value = release.value?.snapshot.hash ?? ''
+  approvalReceiptKey.value = createId('rcpt')
   approvalVisible.value = true
 }
 
-const submitApproval = async (status: ReleaseApproval['status']): Promise<void> => {
+const submitApproval = async (status: 'approved' | 'rejected'): Promise<void> => {
   if (!release.value || !singleApproval.value || !approvalComment.value.trim()) {
     await MessagePlugin.error('审批意见不能为空')
     return
   }
-  store.updateApproval(
+  const result = store.updateApproval(
     release.value.id,
     singleApproval.value.role,
     status,
     singleApproval.value.actor,
     approvalComment.value,
+    approvalSnapshotHash.value,
+    approvalReceiptKey.value,
   )
   approvalVisible.value = false
   await invalidate()
+  if (!result.ok) {
+    await MessagePlugin.error('契约快照已变更，审批回执被退回；内容已保留，请核对最新差异后重试')
+    return
+  }
+  if (result.duplicate) {
+    await MessagePlugin.info('重复回执已忽略，仅处理一次')
+    return
+  }
   await MessagePlugin.success(status === 'approved' ? '审批已通过' : '审批已驳回')
 }
 
@@ -142,32 +184,50 @@ const batchApprove = async (): Promise<void> => {
     await MessagePlugin.error('请选择审批项并填写批量审批意见')
     return
   }
+  const snapshotHash = release.value.snapshot.hash
+  let rejectedCount = 0
   selectedApprovalIds.value.forEach((id) => {
     const approval = release.value?.approvals.find((item) => item.id === id)
-    if (approval) {
-      store.updateApproval(
-        release.value!.id,
-        approval.role,
-        'approved',
-        approval.actor,
-        approvalComment.value,
-      )
-    }
+    if (!approval || !release.value) return
+    const result = store.updateApproval(
+      release.value.id,
+      approval.role,
+      'approved',
+      approval.actor,
+      approvalComment.value,
+      snapshotHash,
+      createId('rcpt'),
+    )
+    if (!result.ok) rejectedCount += 1
   })
   selectedApprovalIds.value = []
   approvalComment.value = ''
   await invalidate()
+  if (rejectedCount > 0) {
+    await MessagePlugin.error('契约快照已变更，部分审批回执被退回，请核对最新差异后重试')
+    return
+  }
   await MessagePlugin.success('批量审批已提交')
+}
+
+const retryRecompute = async (): Promise<void> => {
+  if (!release.value) return
+  if (store.retryRecompute(release.value.id)) {
+    await invalidate()
+    await MessagePlugin.success('快照重算成功，失效回执请按新快照重新提交')
+    return
+  }
+  await MessagePlugin.error('快照重算仍然失败，已有回执保留，可继续重试')
 }
 
 const publish = async (): Promise<void> => {
   if (!release.value) return
   if (!store.publishRelease(release.value.id)) {
-    await MessagePlugin.error('迁移确认或四角色审批尚未完成，当前不可发布')
+    await MessagePlugin.error('迁移确认或四角色审批未基于当前快照完成，当前不可发布')
     return
   }
   await invalidate()
-  await MessagePlugin.success('事件契约版本已发布')
+  await MessagePlugin.success('事件契约版本已按当前快照发布')
 }
 
 const downloadDiff = (): void => {
@@ -175,6 +235,10 @@ const downloadDiff = (): void => {
   const content = JSON.stringify(
     {
       release: release.value.version,
+      snapshot: {
+        hash: release.value.snapshot.hash,
+        createdAt: release.value.snapshot.createdAt,
+      },
       events: release.value.eventIds.map(eventName),
       differences: release.value.differences,
       affectedDependencies: release.value.affectedDependencyIds.map(dependencyName),
@@ -243,6 +307,10 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
         <div>
           <span>事件范围</span>
           <strong>{{ release.eventIds.length }} 个</strong>
+        </div>
+        <div>
+          <span>契约快照</span>
+          <strong>{{ shortHash(release.snapshot.hash) }}</strong>
         </div>
         <div>
           <span>发布就绪度</span>
@@ -323,8 +391,12 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
             <div class="gate-row">
               <CheckCircleIcon />
               <div>
-                <strong>契约差异已生成</strong>
-                <span>{{ release.differences.length }} 个事件参与比较</span>
+                <strong>契约快照已冻结</strong>
+                <span>
+                  {{ shortHash(release.snapshot.hash) }} ·
+                  {{ new Date(release.snapshot.createdAt).toLocaleString('zh-CN') }} ·
+                  {{ release.differences.length }} 个事件参与比较
+                </span>
               </div>
             </div>
             <div class="gate-row">
@@ -356,6 +428,24 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
                 </span>
               </div>
             </div>
+            <div v-if="staleReceiptCount > 0" class="gate-row">
+              <CloseCircleIcon class="pending" />
+              <div>
+                <strong>回执失效待重算</strong>
+                <span>
+                  {{ staleReceiptCount }} 条迁移确认/审批因契约变更失效，需按快照
+                  {{ shortHash(release.snapshot.hash) }} 重新提交
+                </span>
+              </div>
+            </div>
+            <div v-if="release.lastRecomputeError" class="gate-row">
+              <CloseCircleIcon class="pending" />
+              <div>
+                <strong>快照重算失败，已有回执保留</strong>
+                <span>{{ release.lastRecomputeError }}</span>
+                <t-button size="small" variant="outline" @click="retryRecompute">重试重算</t-button>
+              </div>
+            </div>
             <div class="readiness">
               <span>综合就绪度</span>
               <strong>{{ readiness }}%</strong>
@@ -382,13 +472,25 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
               </div>
               <StatusTag :value="confirmation.status" />
               <p>{{ confirmation.note || '尚未填写迁移确认说明。' }}</p>
+              <p v-if="confirmation.status === 'stale'" class="stale-hint">
+                契约已变更，该回执于
+                {{
+                  confirmation.invalidatedAt
+                    ? new Date(confirmation.invalidatedAt).toLocaleString('zh-CN')
+                    : '最近'
+                }}
+                失效，需按快照 {{ shortHash(release.snapshot.hash) }} 重新确认。
+              </p>
+              <p v-if="confirmation.lastAttempt" class="stale-hint">
+                上次提交被退回（{{ confirmation.lastAttempt.reason }}），内容已保留可重试。
+              </p>
               <t-button
                 variant="outline"
                 size="small"
                 :disabled="confirmation.status === 'confirmed'"
                 @click="openMigration(confirmation.id)"
               >
-                确认迁移
+                {{ confirmation.status === 'stale' ? '重新确认' : '确认迁移' }}
               </t-button>
             </article>
           </div>
@@ -408,6 +510,12 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
               <div>
                 <strong>{{ roleLabel(approval.role) }}</strong>
                 <span>{{ approval.actor }} · {{ approval.comment || '待填写意见' }}</span>
+                <span v-if="approval.status === 'stale'" class="stale-hint">
+                  契约已变更，原审批失效，待按当前快照重新审批
+                </span>
+                <span v-else-if="approval.lastAttempt" class="stale-hint">
+                  上次提交被退回（{{ approval.lastAttempt.reason }}），内容已保留可重试
+                </span>
               </div>
               <StatusTag :value="approval.status" />
               <t-button variant="text" size="small" @click.prevent="openApproval(approval)">
@@ -459,6 +567,7 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
     </t-dialog>
 
     <t-dialog v-model:visible="migrationVisible" header="确认下游迁移" width="620px" :footer="false">
+      <div class="snapshot-basis">本回执基于契约快照 {{ shortHash(migrationForm.snapshotHash) }} 提交</div>
       <div class="editor-form">
         <div class="field">
           <label>确认人</label>
@@ -480,6 +589,7 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
         <strong>{{ roleLabel(singleApproval.role) }}</strong>
         <span>{{ singleApproval.actor }}</span>
       </div>
+      <div class="snapshot-basis">本回执基于契约快照 {{ shortHash(approvalSnapshotHash) }} 提交</div>
       <div class="field">
         <label>审批意见</label>
         <t-textarea v-model="approvalComment" :autosize="{ minRows: 5, maxRows: 8 }" />
@@ -510,7 +620,7 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
 
 .release-overview {
   display: grid;
-  grid-template-columns: 180px minmax(260px, 1fr) 130px 140px auto;
+  grid-template-columns: 160px minmax(200px, 1fr) 110px 130px 120px auto;
   align-items: center;
   gap: 1px;
   overflow: hidden;
@@ -656,6 +766,21 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
   grid-column: 1 / -1;
   margin: 0;
   line-height: 1.5;
+}
+
+.stale-hint {
+  color: #b65300 !important;
+  font-size: 11px;
+}
+
+.snapshot-basis {
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  color: #596579;
+  font-size: 12px;
+  background: #f7f8fa;
 }
 
 .migration-card :deep(.t-button) {

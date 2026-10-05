@@ -78,6 +78,22 @@ export interface EventVersionSnapshot {
   status: 'published' | 'superseded'
 }
 
+export interface SnapshotEventContract {
+  eventId: string
+  eventKey: string
+  version: string
+  properties: EventProperty[]
+  platformRules: PlatformRule[]
+}
+
+export interface ReleaseContractSnapshot {
+  id: string
+  hash: string
+  eventIds: string[]
+  events: SnapshotEventContract[]
+  createdAt: string
+}
+
 export interface ContractDifference {
   eventId: string
   eventKey: string
@@ -88,24 +104,51 @@ export interface ContractDifference {
   enumChanges: string[]
 }
 
+export interface MigrationReceiptAttempt {
+  reviewer: string
+  note: string
+  snapshotHash: string
+  reason: string
+  createdAt: string
+}
+
+export interface ApprovalReceiptAttempt {
+  actor: string
+  decision: 'approved' | 'rejected'
+  comment: string
+  snapshotHash: string
+  reason: string
+  createdAt: string
+}
+
 export interface MigrationConfirmation {
   id: string
   dependencyId: string
   version: string
-  status: 'pending' | 'confirmed' | 'rejected'
+  status: 'pending' | 'confirmed' | 'rejected' | 'stale'
   reviewer: string
   note: string
   confirmedAt?: string
+  snapshotHash: string
+  invalidatedAt?: string
+  lastAttempt?: MigrationReceiptAttempt
 }
 
 export interface ReleaseApproval {
   id: string
   role: 'data' | 'product' | 'client' | 'qa'
   actor: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'stale'
   comment: string
   createdAt?: string
+  snapshotHash: string
+  invalidatedAt?: string
+  lastAttempt?: ApprovalReceiptAttempt
 }
+
+export type ReceiptResult =
+  | { ok: true; duplicate: boolean }
+  | { ok: false; reason: 'stale_snapshot' | 'not_found' | 'closed' }
 
 export interface ReleaseCandidate {
   id: string
@@ -117,6 +160,9 @@ export interface ReleaseCandidate {
   differences: ContractDifference[]
   migrationConfirmations: MigrationConfirmation[]
   approvals: ReleaseApproval[]
+  snapshot: ReleaseContractSnapshot
+  processedReceiptKeys: string[]
+  lastRecomputeError?: string
   createdAt: string
   publishedAt?: string
 }
